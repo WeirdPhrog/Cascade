@@ -28,7 +28,7 @@ if [[ $ACTION == uninstall ]]; then
         exit 0
     fi
     # Keep files if removing runtime rules or stopping the unit fails.
-    /usr/bin/python3 "$PROGRAM" clear --yes
+    /usr/bin/python3 -I "$PROGRAM" clear --yes
     systemctl disable --now cascade.service
     rm -f -- "$UNIT" /usr/local/bin/cascade
     if [[ $(readlink /usr/local/bin/gokaskad 2>/dev/null || true) == "$PROGRAM" ]]; then
