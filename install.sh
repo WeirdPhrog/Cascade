@@ -4,7 +4,7 @@ set -Eeuo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 umask 077
 REPO=https://raw.githubusercontent.com/WeirdPhrog/Cascade/main
-EXPECTED_SHA256=ce5c3454ddc543f5cd89bfb898e5d4b8007ce445de4f1382bed2f90e981f62d0
+EXPECTED_SHA256=ad75e63e73cd3973fb269c2f07e577816a2fb72098309e4b5401b1c5cd28c394
 PROGRAM=/usr/local/lib/cascade/cascade.py
 UNIT=/etc/systemd/system/cascade.service
 NO_MENU=0

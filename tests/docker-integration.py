@@ -8,7 +8,7 @@ import tempfile
 import time
 import uuid
 
-from integration import ROOT, SERVER_CODE, CLIENT_CODE, run, ns
+from integration import ROOT, SERVER_CODE, CLIENT_CODE, run, ns, significant
 
 PREFIX = "cs" + uuid.uuid4().hex[:6]
 CLIENT, SERVER = PREFIX + "c", PREFIX + "s"
@@ -96,7 +96,7 @@ def main():
                 vpn_before = run("docker", "exec", CONTAINER, "iptables-save").stdout
                 command("clear", "--yes")
                 def foreign(text):
-                    return [line for line in text.splitlines() if line.startswith(("-A", ":")) and "CSCD_" not in line]
+                    return [line for line in significant(text) if "CSCD_" not in line]
                 assert foreign(run("iptables-save").stdout) == foreign(before)
                 assert foreign(run("docker", "exec", CONTAINER, "iptables-save").stdout) == foreign(vpn_before)
                 assert run("sysctl", "-n", "net.ipv4.ip_forward").stdout.strip() == "1"

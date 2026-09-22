@@ -217,8 +217,20 @@ class Firewall:
         for obj in nft_inventory():
             chain = obj.get("chain", {})
             family, table = chain.get("family"), chain.get("table")
-            if (family in ("ip", "inet") and chain.get("hook") in ("forward", "prerouting")
-                    and table != "cascade_v1" and (family, table) not in (("ip", "filter"), ("ip", "nat"))):
+            # iptables-nft also creates raw/mangle/security base chains. Docker
+            # uses raw PREROUTING even when its userland proxy is disabled.
+            standard = {
+                "raw": {"prerouting": ("filter", -300)},
+                "mangle": {h: ("filter", -150) for h in ("prerouting", "forward", "postrouting")},
+                "nat": {"prerouting": ("nat", -100), "postrouting": ("nat", 100)},
+                "filter": {"forward": ("filter", 0)},
+                "security": {"forward": ("filter", 50)},
+            }
+            hook = chain.get("hook")
+            compatible = (family == "ip" and chain.get("name") == str(hook).upper()
+                          and standard.get(table, {}).get(hook) == (chain.get("type"), chain.get("prio")))
+            if (family in ("ip", "inet") and hook in ("forward", "prerouting", "postrouting")
+                    and table != "cascade_v1" and not compatible):
                 raise Error(f"Найден отдельный nftables firewall {family} {table}. Нужна ручная совместная настройка.")
 
 

@@ -26,6 +26,13 @@ def ns(namespace, *args, **kw):
     return run("ip", "netns", "exec", namespace, *args, **kw)
 
 
+def significant(text):
+    # Builtin policy counters legitimately change while test traffic flows.
+    # Preserve table identity, chain names/policies, all rules and rule order.
+    return [" ".join(line.split()[:2]) if line.startswith(":") else line
+            for line in text.splitlines() if line.startswith(("*", "-A", ":"))]
+
+
 SERVER_CODE = r'''
 import socket, threading, time
 def tcp(port):
@@ -108,6 +115,14 @@ def main():
             return command("add", "--proto", proto, "--listen", "10.200.1.1", "--in-port", str(incoming),
                            "--target", "10.200.2.2", "--out-port", outgoing, *extra)
 
+        # Upgrade a saved v1 configuration and remove only its owned nft table.
+        migrated = dict(proto="tcp", listen="10.200.1.1", incoming=4201, target="10.200.2.2", outgoing=5201)
+        (state / "state.json").write_text(json.dumps({"version": 1, "rules": [migrated], "previous_forward": "0", "external_firewall": True}))
+        ns(RELAY, "nft", "-f", "-", input='table ip cascade_v1 {\n chain ownership {\n counter comment "Cascade managed table v1"\n }\n}\n')
+        command("apply")
+        assert ns(RELAY, "nft", "list", "table", "ip", "cascade_v1", ok=False).returncode != 0
+        assert json.loads((state / "state.json").read_text())["version"] == 2
+        connect("tcp", 4201)
         add("tcp", 4201)
         add("udp", 4201)
         add("tcp", 4202)  # same destination as 4201; must survive deleting 4201
@@ -161,8 +176,7 @@ def main():
         assert ns(RELAY, "iptables", "-t", "nat", "-S", "CSCD_DNAT", ok=False).returncode != 0
         assert ns(RELAY, "sysctl", "-n", "net.ipv4.ip_forward").stdout.strip() == "1"
         after_filter = ns(RELAY, "iptables-save", "-t", "filter").stdout
-        significant = lambda text: [line for line in text.splitlines() if line.startswith(("-A", ":"))]
-        assert significant(after_filter) == significant(foreign_filter)
+        assert significant(after_filter) == significant(foreign_filter), (significant(after_filter), significant(foreign_filter))
         assert ns(RELAY, "nft", "list", "table", "inet", "sentinel").stdout == before
         assert json.loads((state / "state.json").read_text())["rules"] == []
         command("clear", "--yes")
