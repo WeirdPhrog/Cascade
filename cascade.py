@@ -210,10 +210,9 @@ class Firewall:
             raise Error("Системный backend iptables изменён. Верните прежний backend или удалите правила Cascade.")
         other = "iptables-" + ("legacy" if self.backend == "nft" else "nft") + "-save"
         if shutil.which(other, path=SAFE_PATH):
-            for table in CHAINS:
-                saved = parse_save(run([other, "-t", table]).stdout)
-                if saved["rules"] or any(p == "DROP" for p in saved["chains"].values()):
-                    raise Error("Одновременно активны iptables-nft и iptables-legacy. Автоматическое смешивание запрещено.")
+            saved = parse_save(run([other]).stdout)
+            if saved["rules"] or any(p == "DROP" for p in saved["chains"].values()):
+                raise Error("Одновременно активны iptables-nft и iptables-legacy. Автоматическое смешивание запрещено.")
         for obj in nft_inventory():
             chain = obj.get("chain", {})
             family, table = chain.get("family"), chain.get("table")
@@ -344,11 +343,11 @@ def check_ports(rules, snapshot):
             raise Error("Локальный IPv4 не назначен этому серверу: " + item["listen"])
         if item["target"] in addresses:
             raise Error("Назначение находится на этом же VPS; нужен удалённый сервер.")
-        if socket_conflict(item, sockets[item["proto"]]):
-            raise Error(endpoint + " занят локальным сервисом (возможно SSH/VPN). Выберите другой входящий порт.")
         for proto, address, value, name in bindings:
             if proto == item["proto"] and value == item["incoming"] and overlaps(address, item["listen"]):
                 raise Error(endpoint + f" зарезервирован Docker-контейнером {name}. Выберите другой входящий порт.")
+        if socket_conflict(item, sockets[item["proto"]]):
+            raise Error(endpoint + " занят локальным сервисом (возможно SSH/VPN). Выберите другой входящий порт.")
         if any(nat_conflict(item, line) for line in snapshot["nat"]["rules"]):
             raise Error(endpoint + " занят другим DNAT/REDIRECT. Выберите другой входящий порт.")
 

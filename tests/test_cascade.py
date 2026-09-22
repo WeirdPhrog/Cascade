@@ -123,6 +123,25 @@ class ScopedFirewall(unittest.TestCase):
         with self.assertRaisesRegex(c.Error, "backend"):
             fw.preflight()
 
+    def test_mixed_backend_raw_rules_refused(self):
+        answers = [subprocess.CompletedProcess([], 0, "iptables v1.8 (nf_tables)", ""),
+                   subprocess.CompletedProcess([], 0, "*raw\n:PREROUTING ACCEPT [0:0]\n-A PREROUTING -j DROP\nCOMMIT", "")]
+        with patch.object(c, "run", side_effect=answers), patch.object(c.shutil, "which", return_value="/usr/sbin/iptables-legacy-save"):
+            with self.assertRaisesRegex(c.Error, "Одновременно"):
+                c.Firewall().preflight()
+
+    def test_standard_docker_raw_chain_allowed_native_chain_refused(self):
+        fw = c.Firewall.__new__(c.Firewall)
+        fw.backend = fw.default = "nft"
+        raw = dict(family="ip", table="raw", name="PREROUTING", hook="prerouting", type="filter", prio=-300)
+        with patch.object(c.shutil, "which", return_value=None):
+            with patch.object(c, "nft_inventory", return_value=[{"chain": raw}]):
+                fw.preflight()
+            for change in (dict(name="custom"), dict(prio=-301), dict(table="docker-bridges"), dict(family="inet")):
+                with patch.object(c, "nft_inventory", return_value=[{"chain": dict(raw, **change)}]):
+                    with self.assertRaisesRegex(c.Error, "nftables firewall"):
+                        fw.preflight()
+
 
 class Transactions(unittest.TestCase):
     def setUp(self):
