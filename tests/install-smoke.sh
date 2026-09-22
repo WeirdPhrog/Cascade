@@ -27,7 +27,9 @@ cleanup() {
 trap cleanup EXIT
 sudo ip netns add "$namespace"
 sudo ip -n "$namespace" link set lo up
-sudo ip -n "$namespace" addr add 198.18.0.1/24 dev lo
+sudo ip -n "$namespace" link add relay0 type dummy
+sudo ip -n "$namespace" addr add 198.18.0.1/24 dev relay0
+sudo ip -n "$namespace" link set relay0 up
 sudo ip netns exec "$namespace" sysctl -w net.ipv4.ip_forward=0
 sudo systemctl stop cascade.service
 sudo mkdir -p /etc/systemd/system/cascade.service.d
@@ -73,6 +75,19 @@ sudo ip netns exec "$namespace" iptables -t nat -S CSCD_DNAT
 sudo rm /etc/systemd/system/cascade.service.d/failure-test.conf
 sudo systemctl daemon-reload
 sudo systemctl reload cascade.service
+# A symlink used as a lock must not truncate or chmod its target.
+printf 'foreign data\n' > "$scratch/foreign-lock"
+sudo mv /etc/cascade/.lock "$scratch/real-lock"
+sudo ln -s "$scratch/foreign-lock" /etc/cascade/.lock
+if sudo bash install.sh --no-menu; then
+    echo 'Installer followed a lock symlink' >&2; exit 1
+fi
+if sudo ip netns exec "$namespace" cascade apply; then
+    echo 'Manager followed a lock symlink' >&2; exit 1
+fi
+[[ $(cat "$scratch/foreign-lock") == 'foreign data' ]]
+sudo rm /etc/cascade/.lock
+sudo mv "$scratch/real-lock" /etc/cascade/.lock
 # Removal must not delete a command now belonging to someone else.
 sudo rm /usr/local/bin/cascade
 printf 'foreign command\n' | sudo tee /usr/local/bin/cascade

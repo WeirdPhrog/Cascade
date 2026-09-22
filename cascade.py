@@ -91,9 +91,18 @@ def load():
 
 
 def option(tokens, *names):
-    for i, token in enumerate(tokens[:-1]):
+    i, negative = 0, False
+    while i < len(tokens) - 1:
+        token = tokens[i]
+        if token == "!":
+            negative = True
+            i += 1
+            continue
         if token in names:
-            return tokens[i + 1], i > 0 and tokens[i - 1] == "!"
+            return tokens[i + 1], negative
+        # A comment is data, even when its entire value is "-p" or "!".
+        i += 2 if token == "--comment" else 1
+        negative = False
     return None, False
 
 
@@ -422,8 +431,9 @@ def transition(old, new, *, save=True, check=True):
 def locked(*, allow_disabled=False):
     import fcntl
     STATE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with open(STATE.parent / ".lock", "a+", encoding="utf-8") as lock:
-        os.chmod(lock.name, 0o600)
+    fd = os.open(STATE.parent / ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "r+", encoding="utf-8") as lock:
+        os.fchmod(lock.fileno(), 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX)
         lock.seek(0)
         if lock.read().strip() and not allow_disabled:

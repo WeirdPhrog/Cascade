@@ -77,6 +77,14 @@ class PortProtection(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertFalse(c.nat_conflict(ITEM, line))
 
+    def test_comment_cannot_hide_a_port_conflict_or_foreign_reference(self):
+        for comment in ("-p", "!", "-j", "--dport"):
+            line = f'-A PREROUTING -m comment --comment "{comment}" -p tcp --dport 8443 -j DNAT --to-destination 10.2.0.2:443'
+            self.assertTrue(c.nat_conflict(ITEM, line), line)
+        snapshot = c.parse_save(':CSCD_FWD - [0:0]\n-A CSCD_FWD -m comment --comment cascade:v2\n-A FORWARD -m comment --comment "-j" -j CSCD_FWD')
+        with self.assertRaisesRegex(c.Error, "чужая ссылка"):
+            c.owned("filter", snapshot)
+
     @patch.object(c, "local_addresses", return_value={"10.1.0.1"})
     @patch.object(c, "route_to", return_value={"dev": "eth0"})
     @patch.object(c, "run", return_value=subprocess.CompletedProcess([], 0, "", ""))

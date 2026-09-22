@@ -4,7 +4,7 @@ set -Eeuo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 umask 077
 REPO=https://raw.githubusercontent.com/WeirdPhrog/Cascade/main
-EXPECTED_SHA256=92332291b392f557a5004e79761073a6f86343fdc8a5bc971d11d2a617f1753a
+EXPECTED_SHA256=def02d8acf7d06b13a9f42e46876c4899657899fdb4083f9d9b9f217f6bd12c8
 PROGRAM=/usr/local/lib/cascade/cascade.py
 UNIT=/etc/systemd/system/cascade.service
 NO_MENU=0
@@ -29,7 +29,7 @@ for directory in /etc/cascade /usr/local/lib/cascade; do
         echo "Каталог $directory должен принадлежать root." >&2; exit 1
     fi
 done
-for file in "$PROGRAM" "$UNIT" /etc/cascade/state.json; do
+for file in "$PROGRAM" "$UNIT" /etc/cascade/state.json /etc/cascade/.lock; do
     [[ ! -L $file && ( ! -e $file || -f $file ) ]] || {
         echo "Ожидался обычный файл: $file" >&2; exit 1;
     }
