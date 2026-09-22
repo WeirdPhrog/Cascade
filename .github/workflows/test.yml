@@ -16,8 +16,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Static checks and unit tests
         run: |
-          bash -n install.sh tests/install-smoke.sh
-          shellcheck install.sh tests/install-smoke.sh
+          bash -n install.sh tests/install-smoke.sh tests/vpn-fixture.sh
+          shellcheck install.sh tests/install-smoke.sh tests/vpn-fixture.sh
           python3 -m unittest discover -s tests -v
           python3 -m py_compile cascade.py tests/integration.py
           python3 tests/check_integrity.py
@@ -26,6 +26,19 @@ jobs:
       - name: Real TCP and UDP network namespaces
         if: always()
         run: sudo python3 tests/integration.py
+      - name: Legacy iptables network namespaces
+        run: |
+          sudo update-alternatives --set iptables /usr/sbin/iptables-legacy
+          sudo python3 tests/integration.py
+          sudo update-alternatives --set iptables /usr/sbin/iptables-nft
+  docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: sudo apt-get update && sudo apt-get install -y iptables nftables conntrack iproute2
+      - name: Real Docker and Amnezia-style rules
+        run: sudo --preserve-env=GITHUB_ACTIONS python3 tests/docker-integration.py
   debian:
     strategy:
       fail-fast: false

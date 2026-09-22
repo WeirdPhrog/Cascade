@@ -31,16 +31,16 @@ sudo ip netns exec "$namespace" cascade add --proto udp --listen 198.18.0.1 --in
 sudo bash install.sh --no-menu
 sudo systemctl reload cascade.service
 sudo systemctl restart cascade.service
-sudo ip netns exec "$namespace" nft list table ip cascade_v1
+sudo ip netns exec "$namespace" iptables -t nat -S CSCD_DNAT
 [[ $(sudo ip netns exec "$namespace" sysctl -n net.ipv4.ip_forward) == 1 ]]
 sudo systemctl stop cascade.service
-if sudo ip netns exec "$namespace" nft list table ip cascade_v1; then
-    echo 'Table survived service stop' >&2
+if sudo ip netns exec "$namespace" iptables -t nat -S CSCD_DNAT; then
+    echo 'Chain survived service stop' >&2
     exit 1
 fi
-[[ $(sudo ip netns exec "$namespace" sysctl -n net.ipv4.ip_forward) == 0 ]]
+[[ $(sudo ip netns exec "$namespace" sysctl -n net.ipv4.ip_forward) == 1 ]]
 sudo systemctl start cascade.service
-sudo ip netns exec "$namespace" nft list table ip cascade_v1
+sudo ip netns exec "$namespace" iptables -t nat -S CSCD_DNAT
 sudo systemd-analyze verify /etc/systemd/system/cascade.service
 sudo ip netns exec "$namespace" bash install.sh --uninstall
 [[ ! -e /usr/local/bin/cascade ]]

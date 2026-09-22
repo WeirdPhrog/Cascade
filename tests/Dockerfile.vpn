@@ -1,0 +1,5 @@
+FROM debian:12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends python3 iptables iproute2 && rm -rf /var/lib/apt/lists/*
+COPY tests/vpn-fixture.py /echo.py
+COPY tests/vpn-fixture.sh /start.sh
+CMD ["bash", "/start.sh"]

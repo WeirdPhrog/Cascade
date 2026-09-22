@@ -4,7 +4,7 @@ set -Eeuo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 umask 077
 REPO=https://raw.githubusercontent.com/WeirdPhrog/Cascade/main
-EXPECTED_SHA256=4488b7cdc6d8a6e8d713cc274eceb3355c8ec774fd5be1c76e6fb4b4df13d4c3
+EXPECTED_SHA256=ce5c3454ddc543f5cd89bfb898e5d4b8007ce445de4f1382bed2f90e981f62d0
 PROGRAM=/usr/local/lib/cascade/cascade.py
 UNIT=/etc/systemd/system/cascade.service
 NO_MENU=0
@@ -66,7 +66,7 @@ done
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends python3 nftables conntrack iproute2 ca-certificates curl
+apt-get install -y --no-install-recommends python3 iptables nftables conntrack iproute2 ca-certificates curl
 
 scratch=$(mktemp -d /tmp/cascade-install.XXXXXXXX)
 trap 'rm -rf -- "$scratch"' EXIT

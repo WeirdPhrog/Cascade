@@ -89,6 +89,11 @@ def main():
         sentinel = 'table inet sentinel {\n chain input {\n type filter hook input priority 0; policy accept; tcp dport 65000 counter drop;\n }\n}\n'
         ns(RELAY, "nft", "-f", "-", input=sentinel)
         before = ns(RELAY, "nft", "list", "table", "inet", "sentinel").stdout
+        ns(RELAY, "iptables", "-P", "FORWARD", "DROP")
+        ns(RELAY, "iptables", "-N", "DOCKER-USER")
+        ns(RELAY, "iptables", "-A", "DOCKER-USER", "-j", "RETURN")
+        ns(RELAY, "iptables", "-I", "FORWARD", "-j", "DOCKER-USER")
+        foreign_filter = ns(RELAY, "iptables-save", "-t", "filter").stdout
         proc = subprocess.Popen(["ip", "netns", "exec", SERVER, "python3", "-u", "-c", SERVER_CODE])
         PROCESSES.append(proc)
         for _ in range(50):
@@ -112,9 +117,9 @@ def main():
         assert len(json.loads((state / "state.json").read_text())["rules"]) == 3
         add("tcp", 4201, "5202", ("--replace",))
         connect("tcp", 4201)
-        # Saved state reload, including forwarding reset, simulates boot application.
+        # Shared forwarding must stay enabled for other VPNs after stop/clear.
         command("stop")
-        assert ns(RELAY, "sysctl", "-n", "net.ipv4.ip_forward").stdout.strip() == "0"
+        assert ns(RELAY, "sysctl", "-n", "net.ipv4.ip_forward").stdout.strip() == "1"
         connect("tcp", 4201, False)
         command("apply")
         connect("tcp", 4201)
@@ -132,15 +137,32 @@ def main():
         # Deleting an absent rule is safe and repeatable.
         command("delete", "--proto", "tcp", "--listen", "10.200.1.1", "--in-port", "4201")
         assert command("add", "--proto", "tcp", "--in-port", "0", "--target", "10.200.2.2", ok=False).returncode != 0
-        # Existing forwarding firewalls are never bypassed or rewritten.
+        # A foreign DNAT reserves its port, including ranges. No socket required.
+        ns(RELAY, "iptables", "-t", "nat", "-A", "PREROUTING", "-p", "tcp", "--dport", "4300:4310", "-j", "DNAT", "--to-destination", "10.200.2.2:5201")
+        bad = command("add", "--proto", "tcp", "--listen", "10.200.1.1", "--in-port", "4305", "--target", "10.200.2.2", ok=False)
+        assert bad.returncode != 0 and "DNAT/REDIRECT" in bad.stderr
+        # A local listener must never be hijacked, even with --replace.
+        listener = subprocess.Popen(["ip", "netns", "exec", RELAY, "python3", "-c",
+                                     "import socket,time; s=socket.socket(); s.bind(('0.0.0.0',4400)); s.listen(); time.sleep(300)"])
+        PROCESSES.append(listener)
+        for _ in range(50):
+            if "4400" in ns(RELAY, "ss", "-lnt").stdout:
+                break
+            time.sleep(0.05)
+        bad = command("add", "--proto", "tcp", "--listen", "10.200.1.1", "--in-port", "4400", "--target", "10.200.2.2", "--replace", ok=False)
+        assert bad.returncode != 0 and "занят локальным" in bad.stderr
+        # Independent native nftables forwarding remains explicitly unsupported.
         ns(RELAY, "nft", "-f", "-", input='table inet external {\n chain forward {\n type filter hook forward priority 0; policy drop;\n }\n}\n')
         bad = command("add", "--proto", "tcp", "--listen", "10.200.1.1", "--in-port", "4203", "--target", "10.200.2.2", ok=False)
-        assert bad.returncode != 0 and "--external-firewall" in bad.stderr
+        assert bad.returncode != 0 and "nftables firewall" in bad.stderr
         # Cleanup must still work with an external firewall appearing after install.
         command("clear", "--yes")
         assert ns(RELAY, "nft", "list", "table", "inet", "external").returncode == 0
-        assert ns(RELAY, "nft", "list", "table", "ip", "cascade_v1", ok=False).returncode != 0
-        assert ns(RELAY, "sysctl", "-n", "net.ipv4.ip_forward").stdout.strip() == "0"
+        assert ns(RELAY, "iptables", "-t", "nat", "-S", "CSCD_DNAT", ok=False).returncode != 0
+        assert ns(RELAY, "sysctl", "-n", "net.ipv4.ip_forward").stdout.strip() == "1"
+        after_filter = ns(RELAY, "iptables-save", "-t", "filter").stdout
+        significant = lambda text: [line for line in text.splitlines() if line.startswith(("-A", ":"))]
+        assert significant(after_filter) == significant(foreign_filter)
         assert ns(RELAY, "nft", "list", "table", "inet", "sentinel").stdout == before
         assert json.loads((state / "state.json").read_text())["rules"] == []
         command("clear", "--yes")
