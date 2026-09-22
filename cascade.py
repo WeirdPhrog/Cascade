@@ -150,7 +150,9 @@ def desired(table, rules, snapshot):
             content["CSCD_DNAT"].append(f"-A CSCD_DNAT -d {listen}/32 -p {proto} --dport {incoming} {comment} -j DNAT --to-destination {target}:{outgoing}")
             content["CSCD_SNAT"].append(f"-A CSCD_SNAT -p {proto} -d {target}/32 --dport {outgoing} {ct} --ctdir ORIGINAL {comment} -j MASQUERADE")
         else:
-            content["CSCD_FWD"].append(f"-A CSCD_FWD -p {proto} {ct} {comment} -j ACCEPT")
+            # Match the connection protocol, including related ICMP errors
+            # (e.g. fragmentation needed), rather than only outer TCP/UDP.
+            content["CSCD_FWD"].append(f"-A CSCD_FWD {ct} --ctproto {proto} {comment} -j ACCEPT")
     if table == "nat":
         hooks = [f"-A PREROUTING -m addrtype --dst-type LOCAL -m comment --comment {TAG} -j CSCD_DNAT",
                  f"-A POSTROUTING -m comment --comment {TAG} -j CSCD_SNAT"]

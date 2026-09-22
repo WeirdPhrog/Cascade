@@ -132,6 +132,11 @@ def main():
         assert len(json.loads((state / "state.json").read_text())["rules"]) == 3
         add("tcp", 4201, "5202", ("--replace",))
         connect("tcp", 4201)
+        # A related ICMP error must cross FORWARD DROP and both NAT directions.
+        # Port 5203 is closed: recv must report refusal, rather than time out.
+        add("udp", 4204, "5203")
+        ns(CLIENT, "python3", "-c", "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(2); s.connect(('10.200.1.1',4204)); s.send(b'closed-port')\ntry: s.recv(4096)\nexcept ConnectionRefusedError: pass\nelse: raise AssertionError('Missing related ICMP error')")
+        command("delete", "--proto", "udp", "--listen", "10.200.1.1", "--in-port", "4204")
         # Shared forwarding must stay enabled for other VPNs after stop/clear.
         command("stop")
         assert ns(RELAY, "sysctl", "-n", "net.ipv4.ip_forward").stdout.strip() == "1"
@@ -180,7 +185,7 @@ def main():
         assert ns(RELAY, "nft", "list", "table", "inet", "sentinel").stdout == before
         assert json.loads((state / "state.json").read_text())["rules"] == []
         command("clear", "--yes")
-        print("PASS: TCP/UDP, SNAT, replacement, reload, scoped deletion, foreign firewall preservation, cleanup")
+        print("PASS: TCP/UDP, related ICMP, SNAT, replacement, reload, scoped deletion, foreign firewall preservation, cleanup")
 
 
 if __name__ == "__main__":

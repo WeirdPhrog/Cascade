@@ -34,7 +34,8 @@
 * Linux network namespaces: отдельные клиент, relay и конечный сервер, реальные TCP/UDP
   echo-соединения, разные входящий/исходящий порты, SNAT при отсутствии обратного маршрута,
   общая цель у нескольких правил, замена, повторное добавление, stop/apply, удаление и clear,
-  переход с непустого состояния v1 на iptables. На Ubuntu — backend nft и legacy.
+  связанные ICMP-ошибки при FORWARD DROP, переход с непустого состояния v1 на iptables.
+  На Ubuntu — backend nft и legacy.
 * Чужая sentinel-таблица проверяется до и после очистки; чужой FORWARD DROP не переписывается.
 * На Ubuntu 22.04/24.04 и в контейнерах Debian 12/13 проверяются установка/reinstall,
   работа systemd unit с сохранёнными правилами, reload/restart/stop/start, удаление и повторное
