@@ -41,15 +41,10 @@ class Validation(unittest.TestCase):
         with self.assertRaises(c.Error):
             c.validate_state(dict(version=2, backend="nft", rules=[ITEM, ITEM]))
 
-    def test_v1_upgrade_preserves_rules(self):
-        old = dict(version=1, rules=[ITEM], previous_forward="0", external_firewall=True)
-        self.assertEqual(c.validate_state(old), dict(version=2, rules=[ITEM], backend=None))
-
-    def test_no_safety_bypass_flags(self):
+    def test_unknown_options_refused(self):
         with patch("sys.stderr"):
-            for flag in ("--allow-local-port", "--external-firewall"):
-                with self.assertRaises(SystemExit):
-                    c.parser().parse_args(["add", "--proto", "tcp", "--in-port", "8443", "--target", "10.2.0.2", flag])
+            with self.assertRaises(SystemExit):
+                c.parser().parse_args(["add", "--proto", "tcp", "--in-port", "8443", "--target", "10.2.0.2", "--unknown-option"])
 
 
 class PortProtection(unittest.TestCase):
@@ -159,7 +154,7 @@ class Transactions(unittest.TestCase):
             p = patch.object(c, name, value)
             p.start()
             self.addCleanup(p.stop)
-        for name, value in (("Firewall", self.fw), ("old_nft_table", None), ("check_ports", None), ("purge", None)):
+        for name, value in (("Firewall", self.fw), ("check_ports", None), ("purge", None)):
             p = patch.object(c, name, return_value=value)
             setattr(self, name, p.start())
             self.addCleanup(p.stop)

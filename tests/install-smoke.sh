@@ -5,7 +5,7 @@ sudo bash install.sh --no-menu
 sudo systemctl is-enabled --quiet cascade.service
 sudo systemctl is-active --quiet cascade.service
 sudo cascade list
-sudo gokaskad --version
+sudo cascade --version
 
 # Exercise the real unit with saved rules, while all network changes stay in a netns.
 namespace="cascade-smoke-$$"
@@ -44,7 +44,6 @@ sudo ip netns exec "$namespace" iptables -t nat -S CSCD_DNAT
 sudo systemd-analyze verify /etc/systemd/system/cascade.service
 sudo ip netns exec "$namespace" bash install.sh --uninstall
 [[ ! -e /usr/local/bin/cascade ]]
-[[ ! -e /usr/local/bin/gokaskad ]]
 [[ ! -e /etc/systemd/system/cascade.service ]]
 sudo bash install.sh --uninstall
 echo 'PASS: install, reinstall, saved rules through real systemd reload/restart/stop/start, uninstall twice'

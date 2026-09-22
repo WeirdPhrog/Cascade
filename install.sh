@@ -1,10 +1,10 @@
 #!/bin/bash
-# Install only reviewed code from this repository. Never execute an upstream gist.
+# Install the Cascade manager and systemd service.
 set -Eeuo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 umask 077
 REPO=https://raw.githubusercontent.com/WeirdPhrog/Cascade/main
-EXPECTED_SHA256=0e58468a2e642f9447d32e840572e6ddd9aa7508a54ee6e796723b8709ecb1cf
+EXPECTED_SHA256=5b0879ae765497298233d17c3f946e606e6c6b98355354ff38873e1a65229e22
 PROGRAM=/usr/local/lib/cascade/cascade.py
 UNIT=/etc/systemd/system/cascade.service
 NO_MENU=0
@@ -31,9 +31,6 @@ if [[ $ACTION == uninstall ]]; then
     /usr/bin/python3 -I "$PROGRAM" clear --yes
     systemctl disable --now cascade.service
     rm -f -- "$UNIT" /usr/local/bin/cascade
-    if [[ $(readlink /usr/local/bin/gokaskad 2>/dev/null || true) == "$PROGRAM" ]]; then
-        rm -f -- /usr/local/bin/gokaskad
-    fi
     rm -f -- "$PROGRAM" /etc/cascade/state.json
     # Keep .lock and its directory: never unlink a lock held by another process.
     rmdir /usr/local/lib/cascade 2>/dev/null || true
@@ -49,15 +46,13 @@ case "$ID:${VERSION_ID:-}" in
     *) echo 'Поддерживаются Debian 12/13 и Ubuntu 22.04/24.04.' >&2; exit 1 ;;
 esac
 
-# Refuse to silently overwrite the original gist installation or another program.
-for entry in /usr/local/bin/cascade /usr/local/bin/gokaskad; do
-    if [[ -e $entry || -L $entry ]]; then
-        [[ $(readlink "$entry" || true) == "$PROGRAM" ]] || {
-            echo "Файл $entry принадлежит другой установке. См. docs/MIGRATION.md." >&2; exit 1;
-        }
-    fi
-done
-if [[ -e $UNIT ]] && ! grep -q '^# Cascade managed unit v1$' "$UNIT"; then
+# Refuse to overwrite files belonging to another program.
+if [[ -e /usr/local/bin/cascade || -L /usr/local/bin/cascade ]]; then
+    [[ $(readlink /usr/local/bin/cascade || true) == "$PROGRAM" ]] || {
+        echo 'Файл /usr/local/bin/cascade принадлежит другой программе.' >&2; exit 1;
+    }
+fi
+if [[ -e $UNIT ]] && ! grep -q '^# Cascade managed unit$' "$UNIT"; then
     echo "Файл $UNIT не принадлежит Cascade." >&2; exit 1
 fi
 for directory in /etc/cascade /usr/local/lib/cascade; do
@@ -82,7 +77,7 @@ printf '%s  %s\n' "$EXPECTED_SHA256" "$scratch/cascade.py" | sha256sum --check -
 }
 /usr/bin/python3 -I "$scratch/cascade.py" --version
 cat > "$scratch/cascade.service" <<'UNIT'
-# Cascade managed unit v1
+# Cascade managed unit
 [Unit]
 Description=Cascade IPv4 TCP/UDP relay
 Wants=network-online.target
@@ -125,7 +120,7 @@ rollback() {
     if [[ $had_program == 1 ]]; then
         install -m 0755 "$scratch/old.py" "$PROGRAM"
     else
-        rm -f -- "$PROGRAM" /usr/local/bin/cascade /usr/local/bin/gokaskad
+        rm -f -- "$PROGRAM" /usr/local/bin/cascade
     fi
     if [[ $had_unit == 1 ]]; then
         install -m 0644 "$scratch/old.service" "$UNIT"
@@ -146,7 +141,6 @@ install -d -m 0755 /usr/local/lib/cascade
 install -m 0755 "$scratch/cascade.py" /usr/local/lib/cascade/.cascade.py.new
 mv -f -- /usr/local/lib/cascade/.cascade.py.new "$PROGRAM"
 ln -sfn -- "$PROGRAM" /usr/local/bin/cascade
-ln -sfn -- "$PROGRAM" /usr/local/bin/gokaskad
 install -m 0644 "$scratch/cascade.service" "$UNIT"
 systemctl daemon-reload
 systemctl enable cascade.service
@@ -156,7 +150,7 @@ else
     systemctl start cascade.service
 fi
 trap - ERR
-echo 'Cascade установлен. Команды: cascade / gokaskad; справка: cascade --help'
+echo 'Cascade установлен. Команда: cascade; справка: cascade --help'
 if [[ $NO_MENU == 0 && -t 0 ]]; then
     flock -u 9
     exec /usr/bin/python3 -I "$PROGRAM" menu

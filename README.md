@@ -1,12 +1,11 @@
 # Cascade
 
 Промежуточный IPv4-сервер для TCP/UDP: **клиент → ваш VPS → конечный VPN/прокси**.
-Меню на русском, команды `cascade` и `gokaskad`. Подходит для WireGuard/AmneziaWG (UDP),
+Меню на русском, команда `cascade`. Подходит для WireGuard/AmneziaWG (UDP),
 VLESS/XRay и MTProto (TCP), а также перенаправления между разными портами.
 
 Это NAT relay. Он не устанавливает VPN-сервер, не создаёт ключи и не добавляет шифрование.
 Параметры VPN, UUID, ключи, TLS/SNI и проверка сертификатов остаются от конечного сервера.
-Пункт TProxy в старом скрипте был обычным TCP DNAT, настоящего transparent proxy там не было.
 
 ## Установка
 
@@ -26,19 +25,14 @@ sudo bash install.sh
 по SHA-256 так же, как скачанный. Если main обновился между скачиваниями, несовпадение хеша
 останавливает установку: скачайте оба файла одной версии.
 
-Установщик получает из apt пакеты `python3`, `iptables`, `nftables`, `conntrack`, `iproute2`,
-`ca-certificates`, `curl` и их системные зависимости. Исходные системные пакеты поставляет
-ваш Debian/Ubuntu; их копии в репозиторий не включены. `nft` нужен для обнаружения конфликтующих
-firewall и миграции с Cascade v1; новые правила создаются через iptables.
-Gist и сторонние скрипты не исполняются. Обновление выполняется тем же установщиком;
-правила Cascade v1 переносятся автоматически, подробнее в [миграции](docs/MIGRATION.md).
+Системные зависимости устанавливаются через apt: `python3`, `iptables`, `nftables`,
+`conntrack`, `iproute2`, `ca-certificates`, `curl`. `nft` используется для обнаружения
+конфликтующих firewall; правила Cascade создаются через iptables.
 
 ## Настройка
 
 ```bash
 sudo cascade
-# Совместимое имя команды:
-sudo gokaskad
 
 # Адрес назначения и порт VPN; локальный IP определяется по маршруту к цели:
 sudo cascade add --proto udp --in-port 51820 --target 203.0.113.10 --out-port 51820
@@ -91,7 +85,7 @@ sudo bash install.sh --uninstall     # правила, программа и sys
 ## Состояние и firewall
 
 * Настройки: `/etc/cascade/state.json`, права 0600, каталог 0700.
-* Программа: `/usr/local/lib/cascade/cascade.py`; два symlink в `/usr/local/bin`.
+* Программа: `/usr/local/lib/cascade/cascade.py`; команда `/usr/local/bin/cascade`.
 * Свои цепочки: `nat/CSCD_DNAT`, `nat/CSCD_SNAT`, `filter/CSCD_FWD`.
   Правила и переходы помечены комментарием `cascade:v2`; чужие цепочки не очищаются.
 * `cascade.service` восстанавливает правила и forwarding после загрузки сети.
@@ -134,15 +128,13 @@ Cascade может работать рядом с обычным Docker, исп�
 IPv6, диапазоны портов, DNS-имена целей, балансировка и настройка VPN-сервера не поддерживаются.
 Частные IPv4 назначения разрешены для работы через приватную сеть.
 
-## Проверки и происхождение
+## Тестирование
 
 [CI](https://github.com/WeirdPhrog/Cascade/actions/workflows/test.yml) выполняет модульные тесты,
 проверку Bash/ShellCheck, установку и удаление с настоящим systemd на Ubuntu 22.04/24.04
 и в контейнерах Debian 12/13, TCP/UDP-тесты в трёх Linux network namespaces, оба backend
 iptables на Ubuntu и отдельный тест с настоящим Docker и правилами по образцу AmneziaWG.
-VPN-рукопожатие самой Amnezia этими тестами не проверяется. Подробности:
-[аудит](docs/AUDIT.md), [миграция со старого скрипта](docs/MIGRATION.md),
-[происхождение исходника](upstream/README.md).
+VPN-рукопожатие самой Amnezia этими тестами не проверяется.
 
 ```bash
 python3 -m unittest discover -s tests -v

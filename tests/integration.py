@@ -115,14 +115,10 @@ def main():
             return command("add", "--proto", proto, "--listen", "10.200.1.1", "--in-port", str(incoming),
                            "--target", "10.200.2.2", "--out-port", outgoing, *extra)
 
-        # Upgrade a saved v1 configuration and remove only its owned nft table.
-        migrated = dict(proto="tcp", listen="10.200.1.1", incoming=4201, target="10.200.2.2", outgoing=5201)
-        (state / "state.json").write_text(json.dumps({"version": 1, "rules": [migrated], "previous_forward": "0", "external_firewall": True}))
-        ns(RELAY, "nft", "-f", "-", input='table ip cascade_v1 {\n chain ownership {\n counter comment "Cascade managed table v1"\n }\n}\n')
+        # Applying a fresh installation creates an empty configuration.
+        assert not (state / "state.json").exists()
         command("apply")
-        assert ns(RELAY, "nft", "list", "table", "ip", "cascade_v1", ok=False).returncode != 0
-        assert json.loads((state / "state.json").read_text())["version"] == 2
-        connect("tcp", 4201)
+        assert json.loads((state / "state.json").read_text())["rules"] == []
         add("tcp", 4201)
         add("udp", 4201)
         add("tcp", 4202)  # same destination as 4201; must survive deleting 4201

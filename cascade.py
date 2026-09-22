@@ -71,10 +71,6 @@ def empty_state():
 def validate_state(state):
     if not isinstance(state, dict) or type(state.get("version")) is not int:
         raise Error("Повреждён state.json.")
-    if state["version"] == 1:
-        if set(state) != {"version", "rules", "previous_forward", "external_firewall"}:
-            raise Error("Повреждена конфигурация Cascade v1.")
-        state = dict(version=2, rules=state["rules"], backend=None)
     if set(state) != set(empty_state()) or state["version"] != 2 or state["backend"] not in (None, "nft", "legacy"):
         raise Error("Неизвестный формат state.json.")
     if not isinstance(state["rules"], list) or len(state["rules"]) > 1000:
@@ -231,7 +227,7 @@ class Firewall:
             compatible = (family == "ip" and chain.get("name") == str(hook).upper()
                           and standard.get(table, {}).get(hook) == (chain.get("type"), chain.get("prio")))
             if (family in ("ip", "inet") and hook in ("forward", "prerouting", "postrouting")
-                    and table != "cascade_v1" and not compatible):
+                    and not compatible):
                 raise Error(f"Найден отдельный nftables firewall {family} {table}. Нужна ручная совместная настройка.")
 
 
@@ -239,16 +235,6 @@ def nft_inventory():
     if not shutil.which("nft", path=SAFE_PATH):
         return []
     return json.loads(run(["nft", "-j", "list", "ruleset"]).stdout)["nftables"]
-
-
-def old_nft_table():
-    objects = nft_inventory()
-    if not any(o.get("table", {}).get("family") == "ip" and o["table"].get("name") == "cascade_v1" for o in objects):
-        return None
-    if not any(o.get("rule", {}).get("family") == "ip" and o["rule"].get("table") == "cascade_v1"
-               and o["rule"].get("chain") == "ownership" and o["rule"].get("comment") == "Cascade managed table v1" for o in objects):
-        raise Error("Таблица cascade_v1 не имеет метки владельца; автоматическая миграция остановлена.")
-    return run(["nft", "list", "table", "ip", "cascade_v1"]).stdout
 
 
 def local_addresses():
@@ -382,7 +368,6 @@ def transition(old, new, *, save=True, check=True):
     fw = Firewall(old["backend"])
     snapshot = fw.snapshot()
     backup = {t: owned(t, snapshot[t]) for t in CHAINS}
-    legacy = old_nft_table()
     if new["rules"] and check:
         fw.preflight()
         check_ports(new["rules"], snapshot)
@@ -391,24 +376,18 @@ def transition(old, new, *, save=True, check=True):
     validate_state(new)
     pending = stage(new) if save else None
     changed = False
-    removed_legacy = False
     try:
         fw.apply(targets, test=True)
         if new["rules"] and FORWARD.read_text().strip() != "1":
             FORWARD.write_text("1\n")
         changed = True
         fw.apply(targets)
-        if legacy:
-            run(["nft", "delete", "table", "ip", "cascade_v1"])
-            removed_legacy = True
         if pending:
             os.replace(pending, STATE)
     except BaseException as error:
         if changed:
             try:
                 fw.apply(backup)
-                if removed_legacy:
-                    run(["nft", "-f", "-"], data=legacy)
             except BaseException as rollback:
                 raise Error(f"Ошибка: {error}; откат тоже не удался: {rollback}. Выполните cascade apply.") from error
         raise
