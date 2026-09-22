@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""Real Linux kernel tests. All firewall changes occur in throwaway netns."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+
+ROOT = Path(__file__).resolve().parents[1]
+PREFIX = "cs" + uuid.uuid4().hex[:6]
+CLIENT, RELAY, SERVER = [PREFIX + x for x in ("c", "r", "s")]
+PROCESSES = []
+
+
+def run(*args, input=None, ok=True):
+    r = subprocess.run(args, input=input, text=True, capture_output=True, timeout=30)
+    if ok and r.returncode:
+        raise AssertionError(f"{args}: {r.stdout}\n{r.stderr}")
+    return r
+
+
+def ns(namespace, *args, **kw):
+    return run("ip", "netns", "exec", namespace, *args, **kw)
+
+
+SERVER_CODE = r'''
+import socket, threading, time
+def tcp(port):
+    s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+    s.bind(('10.200.2.2',port)); s.listen()
+    while True:
+        c,a=s.accept()
+        with c:
+            data=c.recv(4096); c.sendall(b'echo:'+data)
+def udp(port):
+    s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.bind(('10.200.2.2',port))
+    while True:
+        data,a=s.recvfrom(4096); s.sendto(b'echo:'+data,a)
+for port in (5201,5202):
+    for f in (tcp,udp): threading.Thread(target=f,args=(port,),daemon=True).start()
+while True: time.sleep(60)
+'''
+
+CLIENT_CODE = r'''
+import socket,sys
+s=socket.socket(socket.AF_INET, socket.SOCK_STREAM if sys.argv[1]=='tcp' else socket.SOCK_DGRAM)
+s.settimeout(1)
+s.connect(('10.200.1.1', int(sys.argv[2])))
+s.send(b'cascade-test')
+assert s.recv(4096)==b'echo:cascade-test'
+'''
+
+
+def relay_command(state_dir, *args, ok=True):
+    # Same installed code; only state storage is isolated per test fixture.
+    code = ("import sys; from pathlib import Path; "
+            f"sys.path.insert(0,{str(ROOT)!r}); import cascade; "
+            f"cascade.STATE=Path({str(state_dir / 'state.json')!r}); "
+            "cascade.main()")
+    return ns(RELAY, "python3", "-c", code, *args, ok=ok)
+
+
+def connect(proto, port, succeeds=True):
+    result = ns(CLIENT, "python3", "-c", CLIENT_CODE, proto, str(port), ok=False)
+    assert (result.returncode == 0) == succeeds, result.stderr
+
+
+def main():
+    assert os.geteuid() == 0, "Run with sudo"
+    with tempfile.TemporaryDirectory(prefix="cascade-integration-") as tmp:
+        state = Path(tmp)
+        for name in (CLIENT, RELAY, SERVER):
+            run("ip", "netns", "add", name)
+            ns(name, "ip", "link", "set", "lo", "up")
+        for a, b, aname, bname, aip, bip in (
+            (CLIENT, RELAY, "client0", "left0", "10.200.1.2/24", "10.200.1.1/24"),
+            (RELAY, SERVER, "right0", "server0", "10.200.2.1/24", "10.200.2.2/24"),
+        ):
+            ns(a, "ip", "link", "add", aname, "type", "veth", "peer", "name", bname)
+            ns(a, "ip", "link", "set", bname, "netns", b)
+            for n, dev, addr in ((a, aname, aip), (b, bname, bip)):
+                ns(n, "ip", "addr", "add", addr, "dev", dev)
+                ns(n, "ip", "link", "set", dev, "up")
+        # The server has no return route to CLIENT: a working reply proves scoped SNAT.
+        ns(RELAY, "sysctl", "-w", "net.ipv4.ip_forward=0")
+        sentinel = 'table inet sentinel { chain input { type filter hook input priority 0; policy accept; tcp dport 65000 counter drop; } }'
+        ns(RELAY, "nft", "-f", "-", input=sentinel)
+        before = ns(RELAY, "nft", "list", "table", "inet", "sentinel").stdout
+        proc = subprocess.Popen(["ip", "netns", "exec", SERVER, "python3", "-u", "-c", SERVER_CODE])
+        PROCESSES.append(proc)
+        for _ in range(50):
+            if "5201" in ns(SERVER, "ss", "-lnt").stdout and "5202" in ns(SERVER, "ss", "-lnu").stdout:
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("Echo server failed to start")
+        def command(*args, **kw):
+            return relay_command(state, *args, **kw)
+        def add(proto, incoming, outgoing="5201", extra=()):
+            return command("add", "--proto", proto, "--listen", "10.200.1.1", "--in-port", str(incoming),
+                           "--target", "10.200.2.2", "--out-port", outgoing, *extra)
+
+        add("tcp", 4201)
+        add("udp", 4201)
+        add("tcp", 4202)  # same destination as 4201; must survive deleting 4201
+        for proto in ("tcp", "udp"):
+            connect(proto, 4201)
+        add("tcp", 4201)  # idempotent re-add
+        assert len(json.loads((state / "state.json").read_text())["rules"]) == 3
+        add("tcp", 4201, "5202", ("--replace",))
+        connect("tcp", 4201)
+        # Saved state reload, including forwarding reset, simulates boot application.
+        command("stop")
+        assert ns(RELAY, "sysctl", "-n", "net.ipv4.ip_forward").stdout.strip() == "0"
+        connect("tcp", 4201, False)
+        command("apply")
+        connect("tcp", 4201)
+        connect("udp", 4201)
+        command("delete", "--proto", "tcp", "--listen", "10.200.1.1", "--in-port", "4201")
+        connect("tcp", 4201, False)
+        connect("tcp", 4202)
+        connect("udp", 4201)
+        # Deleting an absent rule is safe and repeatable.
+        command("delete", "--proto", "tcp", "--listen", "10.200.1.1", "--in-port", "4201")
+        assert command("add", "--proto", "tcp", "--in-port", "0", "--target", "10.200.2.2", ok=False).returncode != 0
+        # Existing forwarding firewalls are never bypassed or rewritten.
+        ns(RELAY, "nft", "-f", "-", input='table inet external { chain forward { type filter hook forward priority 0; policy drop; } }')
+        bad = command("add", "--proto", "tcp", "--listen", "10.200.1.1", "--in-port", "4203", "--target", "10.200.2.2", ok=False)
+        assert bad.returncode != 0 and "--external-firewall" in bad.stderr
+        # Cleanup must still work with an external firewall appearing after install.
+        command("clear", "--yes")
+        assert ns(RELAY, "nft", "list", "table", "inet", "external").returncode == 0
+        assert ns(RELAY, "nft", "list", "table", "ip", "cascade_v1", ok=False).returncode != 0
+        assert ns(RELAY, "sysctl", "-n", "net.ipv4.ip_forward").stdout.strip() == "0"
+        assert ns(RELAY, "nft", "list", "table", "inet", "sentinel").stdout == before
+        assert json.loads((state / "state.json").read_text())["rules"] == []
+        command("clear", "--yes")
+        print("PASS: TCP/UDP, SNAT, replacement, reload, scoped deletion, foreign firewall preservation, cleanup")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    finally:
+        for p in PROCESSES:
+            p.terminate()
+            p.wait(timeout=5)
+        for name in (CLIENT, RELAY, SERVER):
+            run("ip", "netns", "delete", name, ok=False)

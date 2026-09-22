@@ -1,0 +1,27 @@
+name: Verify Cascade
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Static checks and unit tests
+        run: |
+          bash -n install.sh tests/install-smoke.sh
+          shellcheck install.sh tests/install-smoke.sh
+          python3 -m unittest discover -s tests -v
+          python3 -m py_compile cascade.py tests/integration.py
+          python3 tests/check_integrity.py
+      - name: Install, systemd, reinstall, uninstall
+        run: bash tests/install-smoke.sh
+      - name: Real TCP and UDP network namespaces
+        run: sudo python3 tests/integration.py
