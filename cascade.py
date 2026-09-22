@@ -539,7 +539,7 @@ def menu():
                             raise Error("Этот входящий порт уже используется Cascade.")
                         check_ports([item], Firewall(state["backend"]).snapshot())
                 incoming = ask("Входящий порт: ", validate_incoming)
-                outgoing = ask("Порт назначения: ", port) if choice == "4" else incoming
+                outgoing = ask("Порт назначения (Enter — как входящий): ", lambda value: port(value or incoming)) or incoming
                 execute(parser().parse_args(["add", "--proto", proto, "--target", target, "--listen", listen,
                                              "--in-port", incoming, "--out-port", outgoing]))
             elif choice == "5":
