@@ -1,5 +1,7 @@
 import copy
+import contextlib
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -76,6 +78,7 @@ class PortProtection(unittest.TestCase):
                 self.assertFalse(c.nat_conflict(ITEM, line))
 
     @patch.object(c, "local_addresses", return_value={"10.1.0.1"})
+    @patch.object(c, "route_to", return_value={"dev": "eth0"})
     @patch.object(c, "run", return_value=subprocess.CompletedProcess([], 0, "", ""))
     def test_docker_binding_without_listener(self, *_):
         with patch.object(c, "docker_bindings", return_value=[("tcp", "0.0.0.0", 8443, "amnezia")]):
@@ -83,6 +86,39 @@ class PortProtection(unittest.TestCase):
                 c.check_ports([ITEM], EMPTY)
         with patch.object(c, "docker_bindings", return_value=[("udp", "0.0.0.0", 8443, "amnezia")]):
             c.check_ports([ITEM], EMPTY)
+
+    def test_docker_failure_does_not_skip_port_check(self):
+        with patch.object(c.Path, "exists", return_value=True), patch.object(c, "run", side_effect=c.Error("Docker unavailable")):
+            with self.assertRaisesRegex(c.Error, "Docker unavailable"):
+                c.docker_bindings()
+
+    def test_local_broadcast_and_unreachable_routes_refused(self):
+        for kind in ("local", "broadcast", "unreachable", "blackhole"):
+            with patch.object(c, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps([dict(type=kind, dev="eth0")]), "")):
+                with self.assertRaises(c.Error):
+                    c.route_to("10.2.0.2")
+        with patch.object(c, "run", side_effect=c.Error("Network unreachable")):
+            with self.assertRaises(c.Error):
+                c.route_to("10.2.0.2")
+
+    def test_missing_nft_is_not_treated_as_empty_firewall(self):
+        with patch.object(c, "run", side_effect=FileNotFoundError("nft")):
+            with self.assertRaises(FileNotFoundError):
+                c.nft_inventory()
+
+
+class Menu(unittest.TestCase):
+    def test_invalid_address_is_reprompted_before_port(self):
+        inputs = ["1", "10.2.0.2", "bad-ip", "10.1.0.1", "8443", "", "0"]
+        with patch("builtins.input", side_effect=inputs), patch("builtins.print"), \
+                patch.object(c, "route_to", return_value={"dev": "eth0"}), \
+                patch.object(c, "local_addresses", return_value={"10.1.0.1"}), \
+                patch.object(c, "locked", side_effect=lambda: contextlib.nullcontext()), \
+                patch.object(c, "load", return_value=c.empty_state()), \
+                patch.object(c, "Firewall"), patch.object(c, "check_ports"), patch.object(c, "execute") as execute:
+            c.menu()
+        args = execute.call_args.args[0]
+        self.assertEqual((args.listen, args.in_port, args.out_port), ("10.1.0.1", "8443", "8443"))
 
 
 class ScopedFirewall(unittest.TestCase):
@@ -125,6 +161,14 @@ class ScopedFirewall(unittest.TestCase):
             with self.assertRaisesRegex(c.Error, "Одновременно"):
                 c.Firewall().preflight()
 
+    def test_other_backend_drop_not_hidden_by_later_table(self):
+        text = "*filter\n:OUTPUT DROP [0:0]\nCOMMIT\n*nat\n:OUTPUT ACCEPT [0:0]\nCOMMIT\n"
+        answers = [subprocess.CompletedProcess([], 0, "iptables v1.8 (nf_tables)", ""),
+                   subprocess.CompletedProcess([], 0, text, "")]
+        with patch.object(c, "run", side_effect=answers), patch.object(c.shutil, "which", return_value="/usr/sbin/iptables-legacy-save"):
+            with self.assertRaisesRegex(c.Error, "Одновременно"):
+                c.Firewall().preflight()
+
     def test_standard_docker_raw_chain_allowed_native_chain_refused(self):
         fw = c.Firewall.__new__(c.Firewall)
         fw.backend = fw.default = "nft"
@@ -163,10 +207,20 @@ class Transactions(unittest.TestCase):
         c.transition(self.old, self.new)
         saved = c.load()
         self.assertEqual(saved["backend"], "nft")
+        self.purge.reset_mock()
         c.transition(saved, dict(saved, rules=[]))
         self.assertEqual(self.forward.read_text(), "1\n")
         self.assertEqual(c.load()["rules"], [])
+        self.assertIsNone(c.load()["backend"])
         self.purge.assert_called_once_with(ITEM)
+
+    def test_empty_apply_does_not_pin_backend(self):
+        c.transition(self.old, self.old)
+        self.assertIsNone(c.load()["backend"])
+
+    def test_apply_expires_only_local_attempts_before_dnat(self):
+        c.transition(self.new, self.new)
+        self.purge.assert_called_once_with(dict(ITEM, target=ITEM["listen"], outgoing=ITEM["incoming"]))
 
     def test_dry_run_failure_changes_nothing(self):
         self.fw.apply.side_effect = c.Error("invalid")
@@ -204,11 +258,26 @@ class Transactions(unittest.TestCase):
         c.transition(self.new, dict(self.new, rules=[]), check=False)
         self.check_ports.assert_not_called()
 
-    def test_conntrack_error_is_reported_after_saved_deletion(self):
+    def test_conntrack_failure_keeps_state_for_retry(self):
+        c.transition(self.old, self.new)
+        saved = c.load()
+        before = self.state.read_bytes()
+        self.fw.apply.reset_mock()
         self.purge.side_effect = c.Error("permission denied")
-        with self.assertRaisesRegex(c.Error, "соединения не очищены"):
-            c.transition(self.new, dict(self.new, rules=[]))
+        with self.assertRaisesRegex(c.Error, "permission denied"):
+            c.transition(saved, dict(saved, rules=[]))
+        self.assertEqual(self.state.read_bytes(), before)
+        self.assertEqual(self.fw.apply.call_count, 3)
+        self.purge.side_effect = None
+        c.transition(saved, dict(saved, rules=[]))
         self.assertEqual(c.load()["rules"], [])
+
+    def test_interrupted_apply_rolls_back(self):
+        self.fw.apply.side_effect = [None, KeyboardInterrupt(), None]
+        with self.assertRaises(KeyboardInterrupt):
+            c.transition(self.old, self.new)
+        self.assertFalse(self.state.exists())
+        self.assertEqual(self.fw.apply.call_count, 3)
 
 
 class Conntrack(unittest.TestCase):

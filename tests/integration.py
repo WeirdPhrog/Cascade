@@ -61,13 +61,31 @@ assert s.recv(4096)==b'echo:cascade-test'
 '''
 
 
-def relay_command(state_dir, *args, ok=True):
+def relay_code(state_dir, fault=None):
     # Same installed code; only state storage is isolated per test fixture.
     code = ("import sys; from pathlib import Path; "
             f"sys.path.insert(0,{str(ROOT)!r}); import cascade; "
-            f"cascade.STATE=Path({str(state_dir / 'state.json')!r}); "
-            "cascade.main()")
-    return ns(RELAY, "python3", "-c", code, *args, ok=ok)
+            f"cascade.STATE=Path({str(state_dir / 'state.json')!r})\n")
+    if fault == "nat":
+        code += """
+original = cascade.Firewall.restore_table
+pending = [True]
+def restore(self, table, target, test=False):
+    if table == 'nat' and not test and pending[0]:
+        pending[0] = False
+        raise cascade.Error('injected NAT failure')
+    return original(self, table, target, test)
+cascade.Firewall.restore_table = restore
+"""
+    elif fault == "conntrack":
+        code += "def fail(item): raise cascade.Error('injected conntrack failure')\ncascade.purge = fail\n"
+    elif fault == "disk":
+        code += "def fail(*args): raise OSError('injected disk failure')\ncascade.os.replace = fail\n"
+    return code + "cascade.main()"
+
+
+def relay_command(state_dir, *args, ok=True, fault=None):
+    return ns(RELAY, "python3", "-c", relay_code(state_dir, fault), *args, ok=ok)
 
 
 def connect(proto, port, succeeds=True):
@@ -126,6 +144,53 @@ def main():
             connect(proto, 4201)
         add("tcp", 4201)  # idempotent re-add
         assert len(json.loads((state / "state.json").read_text())["rules"]) == 3
+        # Exercise rollback against the real kernel, not just command mocks.
+        def snapshot():
+            return significant(ns(RELAY, "iptables-save").stdout)
+        saved, firewall = (state / "state.json").read_bytes(), snapshot()
+        for fault in ("nat", "disk"):
+            bad = command("add", "--proto", "udp", "--listen", "10.200.1.1", "--in-port", "4260",
+                          "--target", "10.200.2.2", "--out-port", "5201", fault=fault, ok=False)
+            assert bad.returncode != 0 and "injected" in bad.stderr, bad.stderr
+            assert (state / "state.json").read_bytes() == saved
+            assert snapshot() == firewall
+            connect("udp", 4201)
+        bad = command("delete", "--proto", "udp", "--listen", "10.200.1.1", "--in-port", "4201", fault="conntrack", ok=False)
+        assert bad.returncode != 0 and "injected" in bad.stderr
+        assert (state / "state.json").read_bytes() == saved
+        assert snapshot() == firewall
+        connect("udp", 4201)
+        # A corrupt state must never be interpreted as an empty firewall.
+        (state / "state.json").write_text("{broken")
+        assert command("apply", ok=False).returncode != 0
+        assert snapshot() == firewall
+        (state / "state.json").write_bytes(saved)
+        # Null NAT bindings from attempts before installation must not stick.
+        ns(CLIENT, "python3", "-c", "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.bind(('10.200.1.2',35111)); s.sendto(b'early',('10.200.1.1',4205))")
+        assert "sport=35111" in ns(RELAY, "conntrack", "-L", "-p", "udp", "--orig-dst", "10.200.1.1", "--orig-port-dst", "4205").stdout
+        add("udp", 4205)
+        client = CLIENT_CODE.replace("s.settimeout(1)", "s.bind(('10.200.1.2',35111)); s.settimeout(1)")
+        ns(CLIENT, "python3", "-c", client, "udp", "4205")
+        # apply must not delete an already-forwarded connection (preserve its ID).
+        flow = ns(RELAY, "conntrack", "-L", "-p", "udp", "--orig-dst", "10.200.1.1", "--orig-port-dst", "4205", "-o", "id").stdout
+        flow_id = flow.split("id=")[-1].strip()
+        command("apply")
+        assert "id=" + flow_id in ns(RELAY, "conntrack", "-L", "-p", "udp", "--orig-dst", "10.200.1.1", "--orig-port-dst", "4205", "-o", "id").stdout
+        command("delete", "--proto", "udp", "--listen", "10.200.1.1", "--in-port", "4205")
+        # Concurrent writers must retain both independent rules.
+        writers = []
+        for value in (4270, 4271):
+            p = subprocess.Popen(["ip", "netns", "exec", RELAY, "python3", "-c", relay_code(state),
+                                  "add", "--proto", "udp", "--listen", "10.200.1.1", "--in-port", str(value),
+                                  "--target", "10.200.2.2", "--out-port", "5201"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            PROCESSES.append(p)
+            writers.append(p)
+        for p in writers:
+            out, err = p.communicate(timeout=30)
+            assert p.returncode == 0, out + err
+        for value in (4270, 4271):
+            connect("udp", value)
+            command("delete", "--proto", "udp", "--listen", "10.200.1.1", "--in-port", str(value))
         add("tcp", 4201, "5202", ("--replace",))
         connect("tcp", 4201)
         # A related ICMP error must cross FORWARD DROP and both NAT directions.
@@ -180,8 +245,14 @@ def main():
         assert significant(after_filter) == significant(foreign_filter), (significant(after_filter), significant(foreign_filter))
         assert ns(RELAY, "nft", "list", "table", "inet", "sentinel").stdout == before
         assert json.loads((state / "state.json").read_text())["rules"] == []
+        assert json.loads((state / "state.json").read_text())["backend"] is None
         command("clear", "--yes")
-        print("PASS: TCP/UDP, related ICMP, SNAT, replacement, reload, scoped deletion, foreign firewall preservation, cleanup")
+        command("clear", "--yes", "--deactivate")
+        bad = command("apply", ok=False)
+        assert bad.returncode != 0 and "удаляется" in bad.stderr
+        command("stop")  # systemd must still be able to finish stopping.
+        command("clear", "--yes", "--deactivate")  # an interrupted uninstall can retry.
+        print("PASS: TCP/UDP, ICMP, SNAT, concurrent writers, rollback, conntrack, corruption, scoped cleanup, deactivation")
 
 
 if __name__ == "__main__":

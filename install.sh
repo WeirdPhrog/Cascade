@@ -4,7 +4,7 @@ set -Eeuo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 umask 077
 REPO=https://raw.githubusercontent.com/WeirdPhrog/Cascade/main
-EXPECTED_SHA256=5b0879ae765497298233d17c3f946e606e6c6b98355354ff38873e1a65229e22
+EXPECTED_SHA256=92332291b392f557a5004e79761073a6f86343fdc8a5bc971d11d2a617f1753a
 PROGRAM=/usr/local/lib/cascade/cascade.py
 UNIT=/etc/systemd/system/cascade.service
 NO_MENU=0
@@ -22,13 +22,37 @@ esac
 exec 9>/run/lock/cascade-install.lock
 flock -x 9
 
+# Apply the same ownership checks to installation and removal.
+for directory in /etc/cascade /usr/local/lib/cascade; do
+    [[ ! -L $directory ]] || { echo "Символическая ссылка вместо $directory" >&2; exit 1; }
+    if [[ -e $directory ]] && [[ ! -d $directory || $(stat -c %u "$directory") != 0 ]]; then
+        echo "Каталог $directory должен принадлежать root." >&2; exit 1
+    fi
+done
+for file in "$PROGRAM" "$UNIT" /etc/cascade/state.json; do
+    [[ ! -L $file && ( ! -e $file || -f $file ) ]] || {
+        echo "Ожидался обычный файл: $file" >&2; exit 1;
+    }
+done
+if [[ -e /usr/local/bin/cascade || -L /usr/local/bin/cascade ]]; then
+    [[ $(readlink /usr/local/bin/cascade || true) == "$PROGRAM" ]] || {
+        echo 'Файл /usr/local/bin/cascade принадлежит другой программе.' >&2; exit 1;
+    }
+fi
+if [[ -e $UNIT ]] && ! grep -q '^# Cascade managed unit$' "$UNIT"; then
+    echo "Файл $UNIT не принадлежит Cascade." >&2; exit 1
+fi
+if [[ -e $PROGRAM ]] && ! grep -Fxq '"""IPv4 relay: only tagged Cascade chains and hooks are modified."""' "$PROGRAM"; then
+    echo "Файл $PROGRAM не принадлежит Cascade." >&2; exit 1
+fi
+
 if [[ $ACTION == uninstall ]]; then
     if [[ ! -f $PROGRAM ]]; then
         echo 'Cascade не установлен.'
         exit 0
     fi
     # Keep files if removing runtime rules or stopping the unit fails.
-    /usr/bin/python3 -I "$PROGRAM" clear --yes
+    /usr/bin/python3 -I "$PROGRAM" clear --yes --deactivate
     systemctl disable --now cascade.service
     rm -f -- "$UNIT" /usr/local/bin/cascade
     rm -f -- "$PROGRAM" /etc/cascade/state.json
@@ -45,19 +69,6 @@ case "$ID:${VERSION_ID:-}" in
     debian:12|debian:13|ubuntu:22.04|ubuntu:24.04) ;;
     *) echo 'Поддерживаются Debian 12/13 и Ubuntu 22.04/24.04.' >&2; exit 1 ;;
 esac
-
-# Refuse to overwrite files belonging to another program.
-if [[ -e /usr/local/bin/cascade || -L /usr/local/bin/cascade ]]; then
-    [[ $(readlink /usr/local/bin/cascade || true) == "$PROGRAM" ]] || {
-        echo 'Файл /usr/local/bin/cascade принадлежит другой программе.' >&2; exit 1;
-    }
-fi
-if [[ -e $UNIT ]] && ! grep -q '^# Cascade managed unit$' "$UNIT"; then
-    echo "Файл $UNIT не принадлежит Cascade." >&2; exit 1
-fi
-for directory in /etc/cascade /usr/local/lib/cascade; do
-    [[ ! -L $directory ]] || { echo "Символическая ссылка вместо $directory" >&2; exit 1; }
-done
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -113,13 +124,17 @@ was_active=0
 systemctl is-enabled --quiet cascade.service 2>/dev/null && was_enabled=1
 systemctl is-active --quiet cascade.service 2>/dev/null && was_active=1
 rollback() {
-    local result=$?
-    trap - ERR
+    local result=${1:-$?}
+    trap - ERR INT TERM
     set +e
     journalctl -u cascade.service -n 30 --no-pager >&2
     if [[ $had_program == 1 ]]; then
         install -m 0755 "$scratch/old.py" "$PROGRAM"
     else
+        if [[ -f $PROGRAM ]] && ! /usr/bin/python3 -I "$PROGRAM" clear --yes --deactivate; then
+            echo 'Откат не смог очистить правила. Файлы сохранены; повторите удаление.' >&2
+            exit "$result"
+        fi
         rm -f -- "$PROGRAM" /usr/local/bin/cascade
     fi
     if [[ $had_unit == 1 ]]; then
@@ -136,12 +151,20 @@ rollback() {
     exit "$result"
 }
 trap rollback ERR
-install -d -m 0700 /etc/cascade
-install -d -m 0755 /usr/local/lib/cascade
+trap 'rollback 130' INT
+trap 'rollback 143' TERM
+install -d -o root -g root -m 0700 /etc/cascade
+install -d -o root -g root -m 0755 /usr/local/lib/cascade
 install -m 0755 "$scratch/cascade.py" /usr/local/lib/cascade/.cascade.py.new
 mv -f -- /usr/local/lib/cascade/.cascade.py.new "$PROGRAM"
 ln -sfn -- "$PROGRAM" /usr/local/bin/cascade
 install -m 0644 "$scratch/cascade.service" "$UNIT"
+# Re-enable commands after a completed removal, without replacing the lock inode.
+exec 8>>/etc/cascade/.lock
+flock -x 8
+: >/etc/cascade/.lock
+flock -u 8
+exec 8>&-
 systemctl daemon-reload
 systemctl enable cascade.service
 if [[ $was_active == 1 ]]; then
@@ -149,7 +172,7 @@ if [[ $was_active == 1 ]]; then
 else
     systemctl start cascade.service
 fi
-trap - ERR
+trap - ERR INT TERM
 echo 'Cascade установлен. Команда: cascade; справка: cascade --help'
 if [[ $NO_MENU == 0 && -t 0 ]]; then
     flock -u 9

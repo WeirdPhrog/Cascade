@@ -10,11 +10,12 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 TAG = "cascade:v2"
 CHAINS = {"nat": ("CSCD_DNAT", "CSCD_SNAT"), "filter": ("CSCD_FWD",)}
 STATE = Path("/etc/cascade/state.json")
@@ -208,8 +209,10 @@ class Firewall:
             raise Error("Системный backend iptables изменён. Верните прежний backend или удалите правила Cascade.")
         other = "iptables-" + ("legacy" if self.backend == "nft" else "nft") + "-save"
         if shutil.which(other, path=SAFE_PATH):
-            saved = parse_save(run([other]).stdout)
-            if saved["rules"] or any(p == "DROP" for p in saved["chains"].values()):
+            text = run([other]).stdout
+            # Builtin names repeat across tables; a later ACCEPT must not
+            # conceal an earlier DROP policy in a different table.
+            if parse_save(text)["rules"] or re.search(r"^:\S+ DROP ", text, re.M):
                 raise Error("Одновременно активны iptables-nft и iptables-legacy. Автоматическое смешивание запрещено.")
         for obj in nft_inventory():
             chain = obj.get("chain", {})
@@ -232,8 +235,6 @@ class Firewall:
 
 
 def nft_inventory():
-    if not shutil.which("nft", path=SAFE_PATH):
-        return []
     return json.loads(run(["nft", "-j", "list", "ruleset"]).stdout)["nftables"]
 
 
@@ -242,11 +243,18 @@ def local_addresses():
             for a in link.get("addr_info", []) if a.get("family") == "inet"}
 
 
-def detect_listen(target):
+def route_to(target):
     routes = json.loads(run(["ip", "-j", "-4", "route", "get", ipv4(target)]).stdout)
-    if not routes or not routes[0].get("prefsrc"):
+    if not routes or routes[0].get("type", "unicast") != "unicast" or not routes[0].get("dev"):
+        raise Error("Назначение должно иметь маршрут к удалённому IPv4, не local/broadcast/blackhole.")
+    return routes[0]
+
+
+def detect_listen(target):
+    route = route_to(target)
+    if not route.get("prefsrc"):
         raise Error("Не удалось определить локальный IP; задайте --listen.")
-    return ipv4(routes[0]["prefsrc"])
+    return ipv4(route["prefsrc"])
 
 
 def overlaps(address, listen):
@@ -323,6 +331,8 @@ def check_ports(rules, snapshot):
     if not rules:
         return
     addresses = local_addresses()
+    for target in {r["target"] for r in rules}:
+        route_to(target)
     sockets = {proto: run(["ss", "-H", "-ant" if proto == "tcp" else "-anu"]).stdout for proto in {r["proto"] for r in rules}}
     bindings = docker_bindings()
     for item in rules:
@@ -372,7 +382,7 @@ def transition(old, new, *, save=True, check=True):
         fw.preflight()
         check_ports(new["rules"], snapshot)
     targets = {t: desired(t, new["rules"], snapshot[t]) for t in CHAINS}
-    new["backend"] = fw.backend
+    new["backend"] = fw.backend if new["rules"] else None
     validate_state(new)
     pending = stage(new) if save else None
     changed = False
@@ -382,6 +392,17 @@ def transition(old, new, *, save=True, check=True):
             FORWARD.write_text("1\n")
         changed = True
         fw.apply(targets)
+        # Keep the saved rules available for retry if conntrack cleanup fails.
+        # A successful deletion means both firewall and existing flows are gone.
+        for item in old["rules"]:
+            if item not in new["rules"]:
+                purge(item)
+        if check:
+            for item in new["rules"]:
+                # Attempts made before DNAT existed can retain a null NAT
+                # binding. Only expire flows whose reply still comes from the
+                # relay itself; established forwarded connections are untouched.
+                purge(dict(item, target=item["listen"], outgoing=item["incoming"]))
         if pending:
             os.replace(pending, STATE)
     except BaseException as error:
@@ -395,25 +416,19 @@ def transition(old, new, *, save=True, check=True):
         if pending:
             pending.unlink(missing_ok=True)
     # Forwarding is shared with Docker/VPNs. Never disable it, even on rollback.
-    failures = []
-    for item in old["rules"]:
-        if item not in new["rules"]:
-            try:
-                purge(item)
-            except (Error, subprocess.SubprocessError) as exc:
-                failures.append(str(exc))
-    if failures:
-        raise Error("Правила удалены, но старые соединения не очищены: " + "; ".join(failures))
 
 
 @contextlib.contextmanager
-def locked():
+def locked(*, allow_disabled=False):
     import fcntl
     STATE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with open(STATE.parent / ".lock", "a", encoding="utf-8") as lock:
+    with open(STATE.parent / ".lock", "a+", encoding="utf-8") as lock:
         os.chmod(lock.name, 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX)
-        yield
+        lock.seek(0)
+        if lock.read().strip() and not allow_disabled:
+            raise Error("Cascade удаляется или уже удалён. Для установки запустите install.sh.")
+        yield lock
 
 
 def display(state):
@@ -424,7 +439,8 @@ def display(state):
 
 
 def execute(args):
-    with locked():
+    deactivate = args.command == "clear" and args.deactivate
+    with locked(allow_disabled=args.command == "stop" or deactivate) as lock:
         old = load()
         new = copy.deepcopy(old)
         if args.command == "list":
@@ -462,6 +478,12 @@ def execute(args):
         elif args.command == "clear":
             new["rules"] = []
             transition(old, new, check=False)
+            if deactivate:
+                # Block already-running menus and queued commands before the
+                # installer stops systemd and removes the executable/state.
+                lock.write("disabled\n")
+                lock.flush()
+                os.fsync(lock.fileno())
         print("Готово.")
 
 
@@ -484,6 +506,7 @@ def parser():
     delete.add_argument("--in-port", required=True)
     clear = sub.add_parser("clear")
     clear.add_argument("--yes", required=True, action="store_true")
+    clear.add_argument("--deactivate", action="store_true", help=argparse.SUPPRESS)
     return root
 
 
@@ -510,8 +533,12 @@ def menu():
                 proto = input("Протокол tcp/udp: ").strip() if choice == "4" else "udp" if choice == "1" else "tcp"
                 if proto not in ("tcp", "udp"):
                     raise Error("Введите tcp или udp.")
-                target = ask("IPv4 назначения: ", ipv4)
-                listen = input("Локальный IPv4 (Enter — определить автоматически): ").strip() or detect_listen(target)
+                target = ask("IPv4 назначения: ", route_to)
+                def validate_listen(value):
+                    address = ipv4(value or detect_listen(target))
+                    if address not in local_addresses():
+                        raise Error("Локальный IPv4 не назначен этому серверу.")
+                listen = ask("Локальный IPv4 (Enter — определить автоматически): ", validate_listen) or detect_listen(target)
                 def validate_incoming(value):
                     item = rule(proto, listen, value, target, value)
                     with locked():
@@ -557,6 +584,9 @@ def main():
         raise Error("Нужен Linux и запуск через sudo/root.")
     os.umask(0o077)
     os.environ["PATH"] = SAFE_PATH
+    def interrupted(signum, _frame):
+        raise Error(f"Операция прервана сигналом {signum}.")
+    signal.signal(signal.SIGTERM, interrupted)
     if args.command in (None, "menu"):
         if not sys.stdin.isatty():
             raise Error("Для меню нужен терминал; для автоматизации используйте cascade --help.")
