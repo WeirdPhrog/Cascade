@@ -121,8 +121,14 @@ def main():
         connect("udp", 4201)
         command("delete", "--proto", "tcp", "--listen", "10.200.1.1", "--in-port", "4201")
         connect("tcp", 4201, False)
+        remaining = ns(RELAY, "conntrack", "-L", "-p", "tcp", "--orig-dst", "10.200.1.1", "--orig-port-dst", "4201").stdout
+        assert not remaining.strip(), remaining
         connect("tcp", 4202)
         connect("udp", 4201)
+        add("tcp", 4203)
+        connect("tcp", 4203)
+        command("delete", "--proto", "tcp", "--listen", "10.200.1.1", "--in-port", "4203")
+        connect("tcp", 4202)
         # Deleting an absent rule is safe and repeatable.
         command("delete", "--proto", "tcp", "--listen", "10.200.1.1", "--in-port", "4201")
         assert command("add", "--proto", "tcp", "--in-port", "0", "--target", "10.200.2.2", ok=False).returncode != 0
