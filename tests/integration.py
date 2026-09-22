@@ -86,7 +86,7 @@ def main():
                 ns(n, "ip", "link", "set", dev, "up")
         # The server has no return route to CLIENT: a working reply proves scoped SNAT.
         ns(RELAY, "sysctl", "-w", "net.ipv4.ip_forward=0")
-        sentinel = 'table inet sentinel { chain input { type filter hook input priority 0; policy accept; tcp dport 65000 counter drop; } }'
+        sentinel = 'table inet sentinel {\n chain input {\n type filter hook input priority 0; policy accept; tcp dport 65000 counter drop;\n }\n}\n'
         ns(RELAY, "nft", "-f", "-", input=sentinel)
         before = ns(RELAY, "nft", "list", "table", "inet", "sentinel").stdout
         proc = subprocess.Popen(["ip", "netns", "exec", SERVER, "python3", "-u", "-c", SERVER_CODE])
@@ -127,7 +127,7 @@ def main():
         command("delete", "--proto", "tcp", "--listen", "10.200.1.1", "--in-port", "4201")
         assert command("add", "--proto", "tcp", "--in-port", "0", "--target", "10.200.2.2", ok=False).returncode != 0
         # Existing forwarding firewalls are never bypassed or rewritten.
-        ns(RELAY, "nft", "-f", "-", input='table inet external { chain forward { type filter hook forward priority 0; policy drop; } }')
+        ns(RELAY, "nft", "-f", "-", input='table inet external {\n chain forward {\n type filter hook forward priority 0; policy drop;\n }\n}\n')
         bad = command("add", "--proto", "tcp", "--listen", "10.200.1.1", "--in-port", "4203", "--target", "10.200.2.2", ok=False)
         assert bad.returncode != 0 and "--external-firewall" in bad.stderr
         # Cleanup must still work with an external firewall appearing after install.

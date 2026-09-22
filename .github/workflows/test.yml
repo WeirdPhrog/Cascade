@@ -25,3 +25,32 @@ jobs:
         run: bash tests/install-smoke.sh
       - name: Real TCP and UDP network namespaces
         run: sudo python3 tests/integration.py
+  debian:
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [12, 13]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Debian systemd container
+        run: |
+          docker build --build-arg DEBIAN_VERSION=${{ matrix.version }} -t cascade-test -f tests/Dockerfile.debian .
+          docker run -d --name cascade-test --privileged --cgroupns=host \
+            --tmpfs /run --tmpfs /run/lock -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$PWD:/src:ro" -w /src cascade-test
+          for i in $(seq 1 30); do
+            docker exec cascade-test systemctl is-system-running && break
+            sleep 1
+          done
+      - name: Debian unit, install, reload and network tests
+        run: |
+          docker exec cascade-test python3 -m unittest discover -s tests -v
+          docker exec cascade-test bash tests/install-smoke.sh
+          docker exec cascade-test python3 tests/integration.py
+      - name: Logs and cleanup
+        if: always()
+        run: |
+          docker logs cascade-test || true
+          docker rm -f cascade-test || true
