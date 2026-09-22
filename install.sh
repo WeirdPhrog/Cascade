@@ -120,6 +120,7 @@ rollback() {
     local result=$?
     trap - ERR
     set +e
+    journalctl -u cascade.service -n 30 --no-pager >&2
     if [[ $had_program == 1 ]]; then
         install -m 0755 "$scratch/old.py" "$PROGRAM"
     else
@@ -133,7 +134,7 @@ rollback() {
     [[ $was_enabled == 1 ]] || systemctl disable cascade.service
     systemctl daemon-reload
     if [[ $was_active == 1 && $had_program == 1 ]]; then
-        /usr/bin/python3 -I "$PROGRAM" apply
+        systemctl reload cascade.service
     fi
     echo 'Установка не завершена; предыдущие файлы восстановлены. Проверьте ошибки выше.' >&2
     exit "$result"

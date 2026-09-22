@@ -10,6 +10,7 @@ sudo gokaskad --version
 # Exercise the real unit with saved rules, while all network changes stay in a netns.
 namespace="cascade-smoke-$$"
 cleanup() {
+    sudo journalctl -u cascade.service -n 40 --no-pager
     sudo systemctl stop cascade.service 2>/dev/null || true
     sudo rm -f /etc/systemd/system/cascade.service.d/network-test.conf
     sudo rmdir /etc/systemd/system/cascade.service.d 2>/dev/null || true

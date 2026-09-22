@@ -24,6 +24,7 @@ jobs:
       - name: Install, systemd, reinstall, uninstall
         run: bash tests/install-smoke.sh
       - name: Real TCP and UDP network namespaces
+        if: always()
         run: sudo python3 tests/integration.py
   debian:
     strategy:
@@ -44,11 +45,13 @@ jobs:
             docker exec cascade-test systemctl is-system-running && break
             sleep 1
           done
-      - name: Debian unit, install, reload and network tests
+      - name: Debian unit, install and reload tests
         run: |
           docker exec cascade-test python3 -m unittest discover -s tests -v
           docker exec cascade-test bash tests/install-smoke.sh
-          docker exec cascade-test python3 tests/integration.py
+      - name: Debian network namespaces
+        if: always()
+        run: docker exec cascade-test python3 tests/integration.py
       - name: Logs and cleanup
         if: always()
         run: |
