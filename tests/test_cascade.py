@@ -55,6 +55,14 @@ class Validation(unittest.TestCase):
         with self.assertRaises(c.Error):
             c.owns_table([{"table": {"family": "ip", "name": c.TABLE}}])
 
+    def test_ownership_on_older_nft_json(self):
+        objects = [{"table": {"family": "ip", "name": c.TABLE}},
+                   {"rule": {"family": "ip", "table": c.TABLE, "chain": "ownership", "comment": c.OWNER}}]
+        self.assertTrue(c.owns_table(objects))
+        objects[1]["rule"]["table"] = "someone_else"
+        with self.assertRaises(c.Error):
+            c.owns_table(objects)
+
     @patch.object(c.shutil, "which", return_value=None)
     def test_foreign_forward_requires_acknowledgement(self, _):
         data = [{"chain": {"family": "inet", "table": "firewall", "name": "forward", "hook": "forward"}}]

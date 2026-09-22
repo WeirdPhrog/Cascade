@@ -103,7 +103,13 @@ def owns_table(objects):
     for obj in objects:
         table = obj.get("table", {})
         if table.get("family") == "ip" and table.get("name") == TABLE:
-            if table.get("comment") != OWNER:
+            # Older nft versions omit table comments from JSON. Rule comments
+            # are available there, so use an unhooked marker chain for ownership.
+            marked = any(entry.get("rule", {}).get("family") == "ip"
+                         and entry["rule"].get("table") == TABLE
+                         and entry["rule"].get("chain") == "ownership"
+                         and entry["rule"].get("comment") == OWNER for entry in objects)
+            if not marked or table.get("comment", OWNER) != OWNER:
                 raise Error(f"Таблица ip {TABLE} уже существует и не принадлежит Cascade.")
             return True
     return False
@@ -129,6 +135,7 @@ def render(rules, exists):
     if not rules:
         return "\n".join(lines) + ("\n" if lines else "")
     lines += [f"table ip {TABLE} {{", f' comment "{OWNER}"',
+              " chain ownership {", f'  counter comment "{OWNER}"', " }",
               " chain prerouting {", "  type nat hook prerouting priority dstnat; policy accept;"]
     for r in rules:
         lines.append(f"  ip daddr {r['listen']} {r['proto']} dport {r['incoming']} counter dnat to {r['target']}:{r['outgoing']}")

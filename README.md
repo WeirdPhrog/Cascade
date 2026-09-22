@@ -109,8 +109,8 @@ IPv6, диапазоны портов, DNS-имена целей, баланси
 ## Проверки и происхождение
 
 [CI](https://github.com/WeirdPhrog/Cascade/actions/workflows/test.yml) выполняет модульные тесты,
-проверку Bash/ShellCheck, установку и удаление с настоящим systemd на Ubuntu 22.04/24.04,
-а также TCP/UDP-тесты в трёх Linux network namespaces. Подробности:
+проверку Bash/ShellCheck, установку и удаление с настоящим systemd на Ubuntu 22.04/24.04
+и в контейнерах Debian 12/13, а также TCP/UDP-тесты в трёх Linux network namespaces. Подробности:
 [аудит](docs/AUDIT.md), [миграция со старого скрипта](docs/MIGRATION.md),
 [происхождение исходника](upstream/README.md).
 

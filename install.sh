@@ -4,7 +4,7 @@ set -Eeuo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 umask 077
 REPO=https://raw.githubusercontent.com/WeirdPhrog/Cascade/main
-EXPECTED_SHA256=6b7379bd0af7657a43fd96cf0a47b435a5ca4241b78464af4e2b6a03d82ff984
+EXPECTED_SHA256=4488b7cdc6d8a6e8d713cc274eceb3355c8ec774fd5be1c76e6fb4b4df13d4c3
 PROGRAM=/usr/local/lib/cascade/cascade.py
 UNIT=/etc/systemd/system/cascade.service
 NO_MENU=0
@@ -102,7 +102,8 @@ ProtectHome=yes
 PrivateTmp=yes
 ProtectSystem=full
 ReadWritePaths=/etc/cascade
-CapabilityBoundingSet=CAP_NET_ADMIN
+# Legacy iptables inspection uses a raw socket even though it is read-only.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 
 [Install]
 WantedBy=multi-user.target
