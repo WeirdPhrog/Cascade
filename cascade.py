@@ -134,8 +134,9 @@ def render(rules, exists):
         lines.append(f"  ip daddr {r['listen']} {r['proto']} dport {r['incoming']} counter dnat to {r['target']}:{r['outgoing']}")
     lines += [" }", " chain postrouting {", "  type nat hook postrouting priority srcnat; policy accept;"]
     for r in rules:
-        lines.append(f"  ct status dnat ct original ip daddr {r['listen']} ct original proto-dst {r['incoming']} "
-                     f"ip daddr {r['target']} {r['proto']} dport {r['outgoing']} counter masquerade")
+        # Match transport first: nft 1.0.2 needs this context for ct proto-dst.
+        lines.append(f"  ip daddr {r['target']} {r['proto']} dport {r['outgoing']} ct status dnat "
+                     f"ct original ip daddr {r['listen']} ct original proto-dst {r['incoming']} counter masquerade")
     lines += [" }", "}"]
     return "\n".join(lines) + "\n"
 

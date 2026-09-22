@@ -1,6 +1,6 @@
 ARG DEBIAN_VERSION=12
 FROM debian:${DEBIAN_VERSION}
 ENV container=docker
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends systemd systemd-sysv sudo python3 iproute2 nftables conntrack ca-certificates curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends systemd systemd-sysv sudo python3 iproute2 nftables conntrack ca-certificates curl procps && rm -rf /var/lib/apt/lists/*
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]
